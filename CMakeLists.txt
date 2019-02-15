@@ -1,0 +1,11 @@
+cmake_minimum_required(VERSION 2.8)
+
+project(firework)
+SET(PLATFORM_SPECIFIC_LIBS "-lpthread")
+SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -pthread")
+set(SOURCE_FILES main.cpp test.cpp)
+add_executable(${PROJECT_NAME} "main.cpp" "test.cpp")
+find_package(OpenGL REQUIRED)
+find_package(GLUT REQUIRED)
+include_directories( ${OPENGL_INCLUDE_DIRS}  ${GLUT_INCLUDE_DIRS} )
+target_link_libraries(${PROJECT_NAME} ${OPENGL_LIBRARIES} ${GLUT_LIBRARY} )
