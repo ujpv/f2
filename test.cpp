@@ -24,9 +24,9 @@ constexpr size_t MAX_EVENETS = 100;
 constexpr float MIN_START_SPEED = 0; // in (px / sec)
 constexpr float MAX_START_SPEED = 100; // in (px / sec)
 constexpr float GRAVIRY = -100.0; // in (px / sec ^ 2)
-constexpr int64_t MIN_LIFE_TIME = 0; // in sec
-constexpr int64_t MAX_LIFE_TIME = 3; // in sec
-constexpr float BURST_PROBABILITY = 64.f / SPARKS_COUNT; // 0..1
+constexpr int64_t MIN_LIFE_TIME = 1; // in sec
+constexpr int64_t MAX_LIFE_TIME = 2; // in sec
+constexpr float BURST_PROBABILITY = 2 /64.f; // 0..1
 
 // Defenitions
 struct Color { float r, g, b, a; };
@@ -54,6 +54,12 @@ private:
   Color m_color;
 };
 
+class SpinLock {
+  std::atomic_flag locked;
+public:
+  void lock() { while (locked.test_and_set(std::memory_order::memory_order_acquire)); }
+  void unlock() {locked.clear(std::memory_order::memory_order_release);}
+};
 
 // Firework states:
 std::atomic<int64_t> globalTimeMs;
@@ -61,11 +67,11 @@ std::atomic<bool> exitFlag{false};
 
 // state:
 // 1st bit - active buffer number
-// 2nd bit - denied swap buffers flag
+// 2nd bit - buffer swapping not allowed
 std::atomic<unsigned> state{0b0};
 
 std::vector<Vec2f> clicks;
-std::mutex clicksMutex;
+SpinLock clicksMutex;
 
 using Buffer = std::vector<Particle>;
 std::array<Buffer, 2> buffers;
@@ -97,12 +103,12 @@ Color randomColor()
 
 void makeBurst(Vec2f position, Buffer &out)
 {
+  if (out.size() + SPARKS_COUNT >= MAX_POINTS)
+    return;
+
   const auto color = randomColor();
   int64_t timeNow = globalTimeMs.load();
-  auto n = SPARKS_COUNT;
-  while (n--) { // SPARKS_COUNT times
-    if (out.size() >= MAX_POINTS)
-      return;
+  for (size_t i = 0; i < SPARKS_COUNT; ++i) {
     out.emplace_back(position,
                      Vec2f::makeRandom(MIN_START_SPEED, MAX_START_SPEED), // speed
                      timeNow,
@@ -145,9 +151,12 @@ void WorkerThread(void)
       if (spark.isExpired(time)) {
         if (randomBinary(BURST_PROBABILITY))
           makeBurst(spark.getPosition(), dstBuffer);
-        else
-          continue;
+
+        continue;
       }
+
+      if (dstBuffer.size() >= MAX_POINTS)
+        break;
 
       dstBuffer.push_back(spark);
       dstBuffer.back().applayForce(float(delta), Vec2f{0, GRAVIRY});
@@ -155,21 +164,20 @@ void WorkerThread(void)
     }
 
     if (not clicks.empty()) {
-      std::lock_guard<std::mutex> guard{clicksMutex};
+      std::lock_guard<SpinLock> guard{clicksMutex};
       for (auto& c: clicks)
         makeBurst(c, dstBuffer);
       clicks.clear();
     }
 
     // swap buffers:
-    unsigned currentState = activeBuffer;
     const unsigned newState = (1 - activeBuffer);
-    bool finished = false;
-    while (not finished) {
-      std::atomic_compare_exchange_strong(&state, &currentState, newState);
-      finished = (currentState == activeBuffer);
-      // if not finished give a chance
-      if (not finished)
+    bool swapped = false;
+    while (not swapped) {
+      unsigned currentState = activeBuffer;
+      swapped = state.compare_exchange_weak(currentState, newState);
+      // if not allowed give a chance to finish rendering
+      if (not swapped)
         std::this_thread::yield();
     }
   } // while (!exitFlag)
@@ -201,30 +209,27 @@ void test::render(void)
 
   while (not captured) {
     unsigned stateExpected = activeBuffer;
-    unsigned newState = 0b10 | activeBuffer;
-    std::atomic_compare_exchange_strong(&state,
-                                        &stateExpected,
-                                        newState);
-    captured = (stateExpected == activeBuffer);
+    unsigned newState = 2 | activeBuffer; // 2 = 0b10
+    captured = state.compare_exchange_weak(stateExpected, newState);
     if (not captured)
       activeBuffer = stateExpected & 1;
   }
 
-  for (const auto &point: buffers[activeBuffer])
-    point.draw();
+  for (size_t i = 0; i < buffers[activeBuffer].size(); ++i)
+    buffers[activeBuffer][i].draw();
 
-  state.store(activeBuffer);
+  state.exchange(activeBuffer);
 }
 
 void test::update(int dt)
 {
   auto time = globalTimeMs.load();
-  globalTimeMs.store(time + dt);
+  globalTimeMs.exchange(time + dt);
 }
 
 void test::on_click(int x, int y)
 {
   y = int(SCREEN_HEIGHT) - y;
-  std::lock_guard<std::mutex> lock(clicksMutex);
+  std::lock_guard<SpinLock> lock(clicksMutex);
   clicks.emplace_back(x, y);
 }
