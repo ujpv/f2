@@ -38,7 +38,7 @@ Vec2f Vec2f::operator+(const Vec2f &rhs) const
 
 Vec2f Vec2f::rotated(float angle) const
 {
-  angle *= (M_PI / 180); // to radians
+  angle *= (3.14 / 180); // to radians
   float cs = std::cos(angle);
   float sn = std::sin(angle);
   return Vec2f(x * cs - y * sn, x * sn + y * cs);
